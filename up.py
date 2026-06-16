@@ -57,25 +57,25 @@ class PassiveMonitor:
         
         if status == "DOWN":
             text = (
-                "🚨 **Uptime Alert!**\n\n"
+                "🚨 <b>Uptime Alert!</b>\n\n"
                 f"{self.target_display} not responding!\n"
-                f"**Timestamp:** `{utc_now}`"
+                f"<b>Timestamp:</b> <code>{utc_now}</code>"
             )
         elif status == "UP":
             text = (
-                "🟢 **Return Alert!**\n\n"
+                "🟢 <b>Return Alert!</b>\n\n"
                 f"{self.target_display} is back!\n"
-                f"**Downtime:** `{downtime}`\n"
-                f"**Timestamp:** `{utc_now}`"
+                f"<b>Downtime:</b> <code>{downtime}</code>\n"
+                f"<b>Timestamp:<b> <code>{utc_now}</code>"
             )
         else:
             text = (
-                "⚠️ **Monitor Error!**\n\n"
-                f"**Issue:** `{error_msg}`\n"
-                f"**Timestamp:** `{utc_now}`"
+                "⚠️ <b>Monitor Error!</b>\n\n"
+                f"<b>Issue:</b> <code>{error_msg}</code>\n"
+                f"<b>Timestamp:</b> <code>{utc_now}</code>"
             )
 
-        payload = {"chat_id": self.alert_chat_id, "text": text, "parse_mode": "Markdown"}
+        payload = {"chat_id": self.alert_chat_id, "text": text, "parse_mode": "HTML"}
         
         async with aiohttp.ClientSession() as session:
             try:
