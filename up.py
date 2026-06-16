@@ -70,7 +70,7 @@ class UptimeMonitor:
         while True:
             probe_time = time.time()
             try:
-                await self.userbot.send_message(self.target, "/start")
+                await self.userbot.send_message(self.target, "/uptime")
                 await asyncio.sleep(self.timeout)
                 
                 history = []
