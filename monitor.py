@@ -64,7 +64,7 @@ class UptimeMonitor:
             sent_time = time.time()
             logger.info(f"Probing @{self.target}...")
             try:
-                await self.userbot.send_message(self.target, "/ping")
+                await self.userbot.send_message(self.target, "/uptime")
             except Exception as e:
                 logger.error(f"Failed to send ping: {e}")
             
