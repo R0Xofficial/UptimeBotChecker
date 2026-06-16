@@ -81,7 +81,7 @@ class UptimeMonitor:
             logger.info(f"Sending probe to @{self.target}...")
             
             try:
-                await self.userbot.send_message(self.target, "/start")
+                await self.userbot.send_message(self.target, "/uptime")
             except Exception as e:
                 logger.error(f"Failed to send probe: {e}")
 
