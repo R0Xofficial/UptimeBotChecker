@@ -21,11 +21,10 @@ class UptimeMonitor:
         self.session_string = os.getenv("SESSION_STRING")
         self.target = os.getenv("TARGET_BOT")
         self.interval = int(os.getenv("CHECK_INTERVAL", 60))
-        self.timeout = int(os.getenv("TIMEOUT", 15))
+        self.timeout = int(os.getenv("TIMEOUT", 15)) # How long to wait for answer
         self.alert_token = os.getenv("ALERT_BOT_TOKEN")
         self.alert_chat_id = os.getenv("ALERT_CHAT_ID")
 
-        # Session in RAM to avoid file issues in Termux
         self.userbot = Client(
             "monitor_session", 
             api_id=self.api_id, 
@@ -36,107 +35,104 @@ class UptimeMonitor:
         
         self.is_down = False
         self.down_start_time = None
-        self.last_response_time = time.time()
+        self.last_response_time = 0
+        self.last_probe_time = 0
 
     async def update_bot_bio(self, state: str):
-        """Updates the Alerter Bot's Bio based on state."""
-        # Using setMyDescription for the main bot profile bio
+        """Updates the Alerter Bot's Bio."""
         url = f"https://api.telegram.org/bot{self.alert_token}/setMyDescription"
-        
-        if state == "ONLINE":
-            status_text = f"Status: 🟢 Online | Monitoring @{self.target}"
-        else:
-            status_text = f"Status: 🚨 Offline | Monitoring @{self.target}"
-        
-        # Add timestamp to know the bot is still running
-        full_bio = f"{status_text}\nLast check: {datetime.now().strftime('%H:%M:%S')}"
+        status_text = "Status: 🟢 Online" if state == "ONLINE" else "Status: 🚨 Offline"
+        full_bio = f"{status_text} | Monitoring @{self.target}\nLast check: {datetime.now().strftime('%H:%M:%S')}"
         
         async with aiohttp.ClientSession() as session:
             try:
                 async with session.post(url, json={"description": full_bio}) as resp:
-                    if resp.status == 200:
-                        logger.info(f"Bio updated to {state}")
-                    else:
+                    if resp.status != 200:
                         logger.error(f"Bio update failed: {await resp.text()}")
             except Exception as e:
-                logger.error(f"Error connecting to Bot API for bio: {e}")
+                logger.error(f"Error updating bio: {e}")
 
     async def send_alert(self, message: str):
-        """Dispatches alert to the channel."""
+        """Sends markdown alert to the channel."""
         url = f"https://api.telegram.org/bot{self.alert_token}/sendMessage"
         payload = {"chat_id": self.alert_chat_id, "text": message, "parse_mode": "Markdown"}
         async with aiohttp.ClientSession() as session:
             try:
                 async with session.post(url, json=payload) as resp:
                     if resp.status != 200:
-                        logger.error(f"SendMessage error: {await resp.text()}")
+                        logger.error(f"Alert failed: {await resp.text()}")
             except Exception as e:
-                logger.error(f"Alerter connection error: {e}")
+                logger.error(f"Alert connection error: {e}")
 
     def format_downtime(self, seconds: float) -> str:
         m, s = divmod(int(seconds), 60)
         h, m = divmod(m, 60)
-        return f"{h}h {m}m {s}s" if h > 0 else f"{m}m {s}s" if m > 0 else f"{s}s"
+        if h > 0: return f"{h}h {m}m {s}s"
+        if m > 0: return f"{m}m {s}s"
+        return f"{s}s"
 
     async def check_loop(self):
-        """Background worker for heartbeats."""
-        # Initial status
+        """Active probe loop: Send -> Wait Timeout -> Check."""
         await self.update_bot_bio("ONLINE")
 
         while True:
-            probe_start = time.time()
-            logger.info(f"Pinging @{self.target}...")
-            try:
-                await self.userbot.send_message(self.target, "/uptime")
-            except Exception as e:
-                logger.error(f"RPC Error sending ping: {e}")
+            # 1. Record probe time and send message
+            self.last_probe_time = time.time()
+            logger.info(f"Sending probe to @{self.target}...")
             
+            try:
+                await self.userbot.send_message(self.target, "/start")
+            except Exception as e:
+                logger.error(f"Failed to send probe: {e}")
+
+            # 2. WAIT EXACTLY THE TIMEOUT PERIOD
             await asyncio.sleep(self.timeout)
 
-            # Check if bot responded
-            if self.last_response_time < probe_start:
-                # If bot is not responding AND we haven't sent the alert yet
+            # 3. VERIFY IF BOT RESPONDED SINCE PROBE WAS SENT
+            if self.last_response_time < self.last_probe_time:
+                # Bot failed to respond within the timeout window
                 if not self.is_down:
                     self.is_down = True
                     self.down_start_time = time.time()
                     
-                    # 1. Send the Alert Message (ONLY ONCE)
-                    alert_msg = f"🚨 **Uptime Alert**\n\n@{self.target} is not responding!"
-                    await self.send_alert(alert_msg)
+                    logger.warning(f"NO RESPONSE from @{self.target} after {self.timeout}s!")
                     
-                    # 2. Change Bio to Offline
+                    await self.send_alert(f"🚨 **Uptime Alert**\n\n@{self.target} is not responding!")
                     await self.update_bot_bio("OFFLINE")
-                    logger.warning(f"Detection: @{self.target} is DOWN. Bio updated.")
+            else:
+                # Bot responded, ensure status is online
+                if not self.is_down:
+                    await self.update_bot_bio("ONLINE")
             
-            await asyncio.sleep(max(self.interval - self.timeout, 1))
+            # 4. SLEEP FOR THE REST OF THE INTERVAL
+            # (Interval minus the time we already spent waiting for the timeout)
+            remaining_sleep = self.interval - self.timeout
+            await asyncio.sleep(max(remaining_sleep, 1))
 
     async def start(self):
         @self.userbot.on_message(filters.chat(self.target))
         async def on_reply(client, message):
+            self.last_response_time = time.time()
+            
             if self.is_down:
-                # Bot was down and just replied
-                duration = self.format_downtime(time.time() - self.down_start_time)
+                # Recovery logic
+                duration = self.format_downtime(self.last_response_time - self.down_start_time)
                 now_str = datetime.now().strftime("%H:%M:%S")
                 
-                # 1. Send Recovery Message
-                recovery_msg = (
+                logger.info(f"Recovery detected for @{self.target}!")
+                
+                await self.send_alert(
                     f"🟢 **Uptime Recovery**\n\n@{self.target} is back up!\n"
                     f"**Downtime:** {duration}\n**Recovered at:** {now_str}"
                 )
-                await self.send_alert(recovery_msg)
-                
-                # 2. Restore Bio to Online
                 await self.update_bot_bio("ONLINE")
                 self.is_down = False
-                logger.info(f"Detection: @{self.target} is UP. Bio restored.")
-            
-            self.last_response_time = time.time()
 
-        logger.info("Initializing Userbot Client...")
+        logger.info("Connecting Userbot...")
         await self.userbot.start()
         
         asyncio.create_task(self.check_loop())
-        logger.info("Monitoring active.")
+        logger.info("System fully operational.")
         await idle()
         await self.userbot.stop()
 
@@ -145,4 +141,4 @@ if __name__ == "__main__":
     try:
         asyncio.run(monitor.start())
     except KeyboardInterrupt:
-        logger.info("Service stopping...")
+        logger.info("Exiting...")
