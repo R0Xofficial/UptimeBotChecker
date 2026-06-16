@@ -7,7 +7,7 @@ import aiohttp
 from dotenv import load_dotenv
 from pyrogram import Client, filters, idle
 
-# --- SZCZEGÓŁOWE LOGOWANIE ---
+# --- LOG ---
 logging.basicConfig(
     level=logging.INFO, 
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -23,7 +23,7 @@ class PassiveMonitor:
         self.api_hash = os.getenv("API_HASH")
         self.session_string = os.getenv("SESSION_STRING")
         
-        # Monitor Config
+        # Technical Chat Identification
         watch_val = os.getenv("WATCH_CHAT")
         if watch_val and (watch_val.startswith("-") or watch_val.isdigit()):
             self.watch_chat = int(watch_val)
@@ -33,15 +33,17 @@ class PassiveMonitor:
         # USER DEFINED DISPLAY NAME
         # Jeśli nie podasz DISPLAY_NAME, użyje WATCH_CHAT
         self.target_display = os.getenv("DISPLAY_NAME") or watch_val
-            
-        self.target_display = f"@{watch_val}" if not str(watch_val).startswith("-") else f"Group({watch_val})"
+        
         self.keyword = os.getenv("PULSE_KEYWORD")
         self.threshold = int(os.getenv("PULSE_THRESHOLD", 90))
         
         # Alerter Config
         self.alert_token = os.getenv("ALERT_BOT_TOKEN")
         alert_chat_val = os.getenv("ALERT_CHAT_ID")
-        self.alert_chat_id = int(alert_chat_val) if alert_chat_val.startswith("-") or alert_chat_val.isdigit() else alert_chat_val
+        try:
+            self.alert_chat_id = int(alert_chat_val)
+        except:
+            self.alert_chat_id = alert_chat_val
 
         self.userbot = None
         self.is_down = False
@@ -49,7 +51,7 @@ class PassiveMonitor:
         self.last_pulse_received = time.time()
 
     async def send_alert(self, status: str, downtime: str = None, error_msg: str = None):
-        """Sends alerts and logs the exact API response."""
+        """Dispatches alerts with custom formatting."""
         url = f"https://api.telegram.org/bot{self.alert_token}/sendMessage"
         utc_now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
         
@@ -75,18 +77,16 @@ class PassiveMonitor:
 
         payload = {"chat_id": self.alert_chat_id, "text": text, "parse_mode": "Markdown"}
         
-        logger.info(f"Attempting to send {status} alert to {self.alert_chat_id}...")
-        
         async with aiohttp.ClientSession() as session:
             try:
                 async with session.post(url, json=payload, timeout=10) as resp:
-                    result = await resp.json()
+                    res = await resp.json()
                     if resp.status == 200:
-                        logger.info("✅ Alert sent successfully!")
+                        logger.info(f"✅ Alert {status} delivered.")
                     else:
-                        logger.error(f"❌ Telegram API rejected alert: {result.get('description')}")
+                        logger.error(f"❌ API Error: {res.get('description')}")
             except Exception as e:
-                logger.error(f"❌ Failed to connect to Telegram API: {e}")
+                logger.error(f"❌ Connection error: {e}")
 
     def format_downtime(self, seconds: float) -> str:
         m, s = divmod(int(seconds), 60)
@@ -96,20 +96,21 @@ class PassiveMonitor:
         return f"{s}s"
 
     async def watchdog_loop(self):
-        """Monitors time since last pulse and logs status."""
-        logger.info("Watchdog loop started.")
+        """Periodic status logger and incident detector."""
+        logger.info("Watchdog cycle started.")
         while True:
             elapsed = time.time() - self.last_pulse_received
             
-            # Log co każde 30 sekund, żeby nie spamić, ale pokazać że działa
-            if int(elapsed) % 30 == 0 and int(elapsed) != 0:
-                logger.info(f"Checking... {int(elapsed)}s since last pulse (Threshold: {self.threshold}s)")
+            # LOG STATUS CO 30 SEKUND
+            if int(time.time()) % 30 < 5: 
+                logger.info(f"Status: OK | Last pulse: {int(elapsed)}s ago | Threshold: {self.threshold}s")
+                await asyncio.sleep(5) # Zapobiega spamowaniu logami w tej samej sekundzie
 
             if elapsed > self.threshold:
                 if not self.is_down:
                     self.is_down = True
                     self.down_start_time = self.last_pulse_received
-                    logger.warning(f"🚨 Pulse missing for {int(elapsed)}s! Triggering ALERT.")
+                    logger.warning(f"🚨 ALERT: Pulse missing for {int(elapsed)}s!")
                     await self.send_alert("DOWN")
             
             await asyncio.sleep(1)
@@ -126,28 +127,26 @@ class PassiveMonitor:
         @self.userbot.on_message(filters.chat(self.watch_chat) & filters.text)
         async def on_pulse(client, message):
             if self.keyword in message.text:
-                logger.info(f"❤️ Pulse captured from {self.target_display}! Content: '{message.text[:20]}...'")
+                logger.info(f"❤️ Pulse from {self.target_display} captured!")
                 
                 if self.is_down:
                     dt = self.format_downtime(time.time() - self.down_start_time)
-                    logger.info(f"💚 Recovery detected! Downtime: {dt}. Triggering RECOVERY alert.")
+                    logger.info(f"💚 Recovery! Downtime: {dt}")
                     await self.send_alert("UP", downtime=dt)
                     self.is_down = False
                 
                 self.last_pulse_received = time.time()
 
         try:
-            logger.info(f"Connecting Userbot for {self.target_display}...")
             await self.userbot.start()
-            logger.info(f"Monitor active. Keyword: '{self.keyword}' | Threshold: {self.threshold}s")
+            logger.info(f"Monitor active for {self.target_display} (Chat: {self.watch_chat})")
+            logger.info(f"Phrase: '{self.keyword}' | Threshold: {self.threshold}s")
             
-            # Start watchdog
             asyncio.create_task(self.watchdog_loop())
-            
             await idle()
             await self.userbot.stop()
         except Exception as e:
-            logger.error(f"Critical start error: {e}")
+            logger.error(f"Critical error: {e}")
             await self.send_alert("ERROR", error_msg=str(e)[:100])
 
 if __name__ == "__main__":
@@ -155,4 +154,4 @@ if __name__ == "__main__":
     try:
         asyncio.run(monitor.start())
     except KeyboardInterrupt:
-        logger.info("Monitor stopped manually.")
+        logger.info("Stopped.")
