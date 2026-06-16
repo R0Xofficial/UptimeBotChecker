@@ -7,7 +7,7 @@ import aiohttp
 from dotenv import load_dotenv
 from pyrogram import Client, filters, idle
 
-# --- LOGGER CONFIGURATION ---
+# --- LOGGER ---
 LOG_FORMAT = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 logging.basicConfig(level=logging.INFO, format=LOG_FORMAT)
 logging.getLogger("pyrogram").setLevel(logging.WARNING)
@@ -21,7 +21,7 @@ class UptimeMonitor:
         self.session_string = os.getenv("SESSION_STRING")
         self.target = os.getenv("TARGET_BOT")
         self.interval = int(os.getenv("CHECK_INTERVAL", 60))
-        self.timeout = int(os.getenv("TIMEOUT", 15)) # How long to wait for answer
+        self.timeout = int(os.getenv("TIMEOUT", 15))
         self.alert_token = os.getenv("ALERT_BOT_TOKEN")
         self.alert_chat_id = os.getenv("ALERT_CHAT_ID")
 
@@ -35,110 +35,90 @@ class UptimeMonitor:
         
         self.is_down = False
         self.down_start_time = None
-        self.last_response_time = 0
-        self.last_probe_time = 0
+        self.response_event = asyncio.Event()
+        
+        # PRZECHOWUJEMY ID WYSŁANEJ WIADOMOŚCI
+        self.last_probe_id = None
 
     async def update_bot_bio(self, state: str):
-        """Updates the Alerter Bot's Bio."""
         url = f"https://api.telegram.org/bot{self.alert_token}/setMyDescription"
-        status_text = "Status: 🟢 Online" if state == "ONLINE" else "Status: 🚨 Offline"
-        full_bio = f"{status_text} | Monitoring @{self.target}\nLast check: {datetime.now().strftime('%H:%M:%S')}"
-        
+        emoji = "🟢 Online" if state == "ONLINE" else "🚨 Offline"
+        full_bio = f"Status: {emoji} | Monitoring @{self.target}\nLast update: {datetime.now().strftime('%H:%M:%S')}"
         async with aiohttp.ClientSession() as session:
-            try:
-                async with session.post(url, json={"description": full_bio}) as resp:
-                    if resp.status != 200:
-                        logger.error(f"Bio update failed: {await resp.text()}")
-            except Exception as e:
-                logger.error(f"Error updating bio: {e}")
+            try: await session.post(url, json={"description": full_bio})
+            except: pass
 
     async def send_alert(self, message: str):
-        """Sends markdown alert to the channel."""
         url = f"https://api.telegram.org/bot{self.alert_token}/sendMessage"
         payload = {"chat_id": self.alert_chat_id, "text": message, "parse_mode": "Markdown"}
         async with aiohttp.ClientSession() as session:
-            try:
-                async with session.post(url, json=payload) as resp:
-                    if resp.status != 200:
-                        logger.error(f"Alert failed: {await resp.text()}")
-            except Exception as e:
-                logger.error(f"Alert connection error: {e}")
-
-    def format_downtime(self, seconds: float) -> str:
-        m, s = divmod(int(seconds), 60)
-        h, m = divmod(m, 60)
-        if h > 0: return f"{h}h {m}m {s}s"
-        if m > 0: return f"{m}m {s}s"
-        return f"{s}s"
+            try: await session.post(url, json=payload)
+            except: pass
 
     async def check_loop(self):
-        """Active probe loop: Send -> Wait Timeout -> Check."""
         await self.update_bot_bio("ONLINE")
 
         while True:
-            # 1. Record probe time and send message
-            self.last_probe_time = time.time()
-            logger.info(f"Sending probe to @{self.target}...")
+            self.response_event.clear()
+            logger.info(f"Probing @{self.target}...")
             
             try:
-                await self.userbot.send_message(self.target, "/uptime")
+                # WYSYŁAMY WIADOMOŚĆ I ZAPISUJEMY JEJ OBIEKT
+                sent_msg = await self.userbot.send_message(self.target, "/start")
+                self.last_probe_id = sent_msg.id # TO JEST NASZE ID REFERENCYJNE
+                
             except Exception as e:
                 logger.error(f"Failed to send probe: {e}")
 
-            # 2. WAIT EXACTLY THE TIMEOUT PERIOD
-            await asyncio.sleep(self.timeout)
-
-            # 3. VERIFY IF BOT RESPONDED SINCE PROBE WAS SENT
-            if self.last_response_time < self.last_probe_time:
-                # Bot failed to respond within the timeout window
+            try:
+                # Czekamy na sygnał z handlera
+                await asyncio.wait_for(self.response_event.wait(), timeout=self.timeout)
+                logger.info(f"Verified specific response from @{self.target}.")
+                
+            except asyncio.TimeoutError:
                 if not self.is_down:
                     self.is_down = True
                     self.down_start_time = time.time()
-                    
-                    logger.warning(f"NO RESPONSE from @{self.target} after {self.timeout}s!")
-                    
+                    logger.warning(f"TIMEOUT: @{self.target} didn't reply to msg {self.last_probe_id}")
                     await self.send_alert(f"🚨 **Uptime Alert**\n\n@{self.target} is not responding!")
                     await self.update_bot_bio("OFFLINE")
-            else:
-                # Bot responded, ensure status is online
-                if not self.is_down:
-                    await self.update_bot_bio("ONLINE")
             
-            # 4. SLEEP FOR THE REST OF THE INTERVAL
-            # (Interval minus the time we already spent waiting for the timeout)
-            remaining_sleep = self.interval - self.timeout
-            await asyncio.sleep(max(remaining_sleep, 1))
+            await asyncio.sleep(self.interval)
 
     async def start(self):
         @self.userbot.on_message(filters.chat(self.target))
         async def on_reply(client, message):
-            self.last_response_time = time.time()
+            # LOGIKA PRZECHWYTYWANIA ODPOWIEDZI:
             
-            if self.is_down:
-                # Recovery logic
-                duration = self.format_downtime(self.last_response_time - self.down_start_time)
-                now_str = datetime.now().strftime("%H:%M:%S")
+            # 1. Sprawdzamy czy to jest techniczny "Reply" na naszą wiadomość
+            is_technical_reply = (
+                message.reply_to_message and 
+                message.reply_to_message.id == self.last_probe_id
+            )
+            
+            # 2. Fallback: Jeśli bot nie używa funkcji reply, sprawdzamy czy to po prostu 
+            # nowa wiadomość od niego, która przyszła po wysłaniu sondy
+            is_new_response = message.id > self.last_probe_id if self.last_probe_id else False
+
+            if is_technical_reply or is_new_response:
+                self.response_event.set()
                 
-                logger.info(f"Recovery detected for @{self.target}!")
-                
-                await self.send_alert(
-                    f"🟢 **Uptime Recovery**\n\n@{self.target} is back up!\n"
-                    f"**Downtime:** {duration}\n**Recovered at:** {now_str}"
-                )
-                await self.update_bot_bio("ONLINE")
-                self.is_down = False
+                if self.is_down:
+                    duration = int(time.time() - self.down_start_time)
+                    await self.send_alert(
+                        f"🟢 **Uptime Recovery**\n\n@{self.target} is back up!\n"
+                        f"**Downtime:** {duration}s\n**Recovered at:** {datetime.now().strftime('%H:%M:%S')}"
+                    )
+                    await self.update_bot_bio("ONLINE")
+                    self.is_down = False
 
         logger.info("Connecting Userbot...")
         await self.userbot.start()
-        
         asyncio.create_task(self.check_loop())
-        logger.info("System fully operational.")
         await idle()
         await self.userbot.stop()
 
 if __name__ == "__main__":
     monitor = UptimeMonitor()
-    try:
-        asyncio.run(monitor.start())
-    except KeyboardInterrupt:
-        logger.info("Exiting...")
+    try: asyncio.run(monitor.start())
+    except KeyboardInterrupt: logger.info("Stopped.")
