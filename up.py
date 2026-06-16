@@ -30,6 +30,10 @@ class PassiveMonitor:
         else:
             self.watch_chat = watch_val
             
+        # USER DEFINED DISPLAY NAME
+        # Jeśli nie podasz DISPLAY_NAME, użyje WATCH_CHAT
+        self.target_display = os.getenv("DISPLAY_NAME") or watch_val
+            
         self.target_display = f"@{watch_val}" if not str(watch_val).startswith("-") else f"Group({watch_val})"
         self.keyword = os.getenv("PULSE_KEYWORD")
         self.threshold = int(os.getenv("PULSE_THRESHOLD", 90))
