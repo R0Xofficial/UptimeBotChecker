@@ -66,7 +66,7 @@ class PassiveMonitor:
                 "🟢 <b>Return Alert!</b>\n\n"
                 f"{self.target_display} is back!\n"
                 f"<b>Downtime:</b> <code>{downtime}</code>\n"
-                f"<b>Timestamp:<b> <code>{utc_now}</code>"
+                f"<b>Timestamp:</b> <code>{utc_now}</code>"
             )
         else:
             text = (
