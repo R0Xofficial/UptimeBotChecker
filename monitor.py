@@ -87,7 +87,7 @@ class UptimeMonitor:
             probe_start = time.time()
             logger.info(f"Pinging @{self.target}...")
             try:
-                await self.userbot.send_message(self.target, "/start")
+                await self.userbot.send_message(self.target, "/uptime")
             except Exception as e:
                 logger.error(f"RPC Error sending ping: {e}")
             
