@@ -109,7 +109,7 @@ class PassiveMonitor:
             if elapsed > self.threshold:
                 if not self.is_down:
                     self.is_down = True
-                    self.down_start_time = time.time()
+                    self.down_start_time = self.last_pulse_received
                     logger.warning(f"🚨 ALERT: Pulse missing for {int(elapsed)}s!")
                     await self.send_alert("DOWN")
             
